@@ -1,0 +1,104 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--Project was exported from assembly: C:\Users\cwoerz\Dropbox\FuelPanel.dll-->
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{2A2A215D-82C7-4F74-848A-F5C217E5635E}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AssemblyName>FuelPanel</AssemblyName>
+    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <TargetFrameworkProfile />
+    <ApplicationVersion>1.0.0.0</ApplicationVersion>
+    <FileAlignment>512</FileAlignment>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup>
+    <RootNamespace>FuelPanel</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>..\SteamLibrary\SteamApps\common\Kerbal Space Program\KSP_Data\Managed\Assembly-CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Core" />
+    <Reference Include="System" />
+    <Reference Include="UnityEngine">
+      <HintPath>..\SteamLibrary\SteamApps\common\Kerbal Space Program\KSP_Data\Managed\UnityEngine.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Check.cs" />
+    <Compile Include="Debug.cs" />
+    <Compile Include="FuelPanelManager.cs" />
+    <Compile Include="FuelPanelPanel.cs" />
+    <Compile Include="AssemblyInfo.cs" />
+    <Compile Include="MiniJSON.cs" />
+    <Compile Include="Pump.cs" />
+    <Compile Include="Settings.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Import Project="Package.proj" />
+  <PropertyGroup>
+    <BuildDependsOn>
+        $(BuildDependsOn);
+		Package
+    </BuildDependsOn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Package Include="$(TargetPath);$(SolutionDir)LICENSE" />
+  </ItemGroup>
+  <Target Name="Package">
+    <Delete Files="$(SolutionDir)FuelPanel.zip" TreatErrorsAsWarnings="true" />
+    <RemoveDir Directories="$(SolutionDir)package" />
+    <MakeDir Directories="$(SolutionDir)package" />
+    <MakeDir Directories="$(SolutionDir)package\\FuelPanel" />
+    <Copy SourceFiles="@(Package)" DestinationFolder="$(SolutionDir)package\\FuelPanel" />
+    <ZipFolder InputFolder="$(SolutionDir)package" Output="$(SolutionDir)FuelPanel.zip" />
+  </Target>
+  <PropertyGroup>
+    <PostBuildEvent>rem Set the Variables we need
+echo Finding KSP
+if exist "G:\kspdev\KSP.exe" (
+	set GAMEPATH=G:\kspdev
+)else (
+	echo "Cant find KSP"
+	exit 1
+)
+
+echo Gamepath: %25GAMEPATH%25
+set DestPath="%25GAMEPATH%25\GameData\FuelPanel"
+set Binary="%25GAMEPATH%25\KSP.exe"
+set StartX="%25GAMEPATH%25\StartX.exe"
+
+if not $(ConfigurationName)==Debug goto PACKAGE
+:DEBUGCONFIG
+rem Copy DLL and run KSP
+copy "$(TargetPath)" "%25DestPath%25"
+rem and then run the game
+
+%25StartX%25 "KSP" %25Binary%25
+
+goto END
+
+:PACKAGE
+:END</PostBuildEvent>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,721 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <UsingTask TaskName="ZipFolder" TaskFactory="CodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.v$(MSBuildToolsVersion).dll">
+    <ParameterGroup>
+      <InputFolder ParameterType="System.String" />
+	  <Output ParameterType="System.String" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Collections.Generic;
+using System.IO;
+    public class ZipFolder : Microsoft.Build.Utilities.Task
+	{
+		[Microsoft.Build.Framework.Required]
+        public string InputFolder
+        {
+            get;
+            set;
+        }
+
+        [Microsoft.Build.Framework.Required]
+        public string Output
+        {
+            get;
+            set;
+        }
+
+        public override bool Execute()
+        {
+            ZipFile zip = new ZipFile(Output, this);
+
+            zip.AddDirectory(InputFolder, "");
+
+            zip.Save();
+
+            return true;
+        }
+
+        public class ZipDirEntry
+        {
+            internal const int ZipDirEntrySignature = 0x02014b50;
+        }
+
+        public class ZipEntry
+        {
+
+            private const int ZipEntrySignature = 0x04034b50;
+            private const int ZipEntryDataDescriptorSignature = 0x08074b50;
+
+            private bool _Debug = false;
+
+            private DateTime _LastModified;
+            public DateTime LastModified
+            {
+                get { return _LastModified; }
+            }
+
+            // when this is set, we trim the volume (eg C:\) off any fully-qualified pathname, 
+            // before writing the ZipEntry into the ZipFile. 
+            private bool _TrimVolumeFromFullyQualifiedPaths = true;  // by default, trim them.
+            public bool TrimVolumeFromFullyQualifiedPaths
+            {
+                get { return _TrimVolumeFromFullyQualifiedPaths; }
+                set { _TrimVolumeFromFullyQualifiedPaths = value; }
+            }
+
+            private string _FileName;
+            public string FileName
+            {
+                get { return _FileName; }
+            }
+            
+            private string _FileNameInArchive;
+            public string FileNameInArchive
+            {
+                get { return _FileNameInArchive; }
+            }
+
+            private Int16 _VersionNeeded;
+            public Int16 VersionNeeded
+            {
+                get { return _VersionNeeded; }
+            }
+
+            private Int16 _BitField;
+            public Int16 BitField
+            {
+                get { return _BitField; }
+            }
+
+            private Int16 _CompressionMethod;
+            public Int16 CompressionMethod
+            {
+                get { return _CompressionMethod; }
+            }
+
+            private Int32 _CompressedSize;
+            public Int32 CompressedSize
+            {
+                get { return _CompressedSize; }
+            }
+
+            private Int32 _UncompressedSize;
+            public Int32 UncompressedSize
+            {
+                get { return _UncompressedSize; }
+            }
+
+            public Double CompressionRatio
+            {
+                get
+                {
+                    return 100 * (1.0 - (1.0 * CompressedSize) / (1.0 * UncompressedSize));
+                }
+            }
+
+            private Int32 _LastModDateTime;
+            private Int32 _Crc32;
+            private byte[] _Extra;
+
+            private byte[] __filedata;
+            private byte[] _FileData
+            {
+                get
+                {
+                    if (__filedata == null)
+                    {
+                    }
+                    return __filedata;
+                }
+            }
+
+            private System.IO.MemoryStream _UnderlyingMemoryStream;
+            private System.IO.Compression.DeflateStream _CompressedStream;
+            private System.IO.Compression.DeflateStream CompressedStream
+            {
+                get
+                {
+                    if (_CompressedStream == null)
+                    {
+                        _UnderlyingMemoryStream = new System.IO.MemoryStream();
+                        bool LeaveUnderlyingStreamOpen = true;
+                        _CompressedStream = new System.IO.Compression.DeflateStream(_UnderlyingMemoryStream,
+                                                        System.IO.Compression.CompressionMode.Compress,
+                                                        LeaveUnderlyingStreamOpen);
+                    }
+                    return _CompressedStream;
+                }
+            }
+
+            private byte[] _header;
+            internal byte[] Header
+            {
+                get
+                {
+                    return _header;
+                }
+            }
+
+            private int _RelativeOffsetOfHeader;
+
+            internal static ZipEntry Create(String filename, string DirectoryPathInArchive)
+            {
+                ZipEntry entry = new ZipEntry();
+                entry._FileName = filename;
+
+                entry._LastModified = System.IO.File.GetLastWriteTime(filename);
+                // adjust the time if the .NET BCL thinks it is in DST.  
+                // see the note elsewhere in this file for more info. 
+                if (entry._LastModified.IsDaylightSavingTime())
+                {
+                    System.DateTime AdjustedTime = entry._LastModified - new System.TimeSpan(1, 0, 0);
+                    entry._LastModDateTime = Shared.DateTimeToPacked(AdjustedTime);
+                }
+                else
+                    entry._LastModDateTime = Shared.DateTimeToPacked(entry._LastModified);
+
+                entry._FileNameInArchive = System.IO.Path.Combine(DirectoryPathInArchive, System.IO.Path.GetFileName(filename));
+
+                // we don't actually slurp in the file until the caller invokes Write on this entry.
+
+                return entry;
+            }
+
+            internal void WriteCentralDirectoryEntry(System.IO.Stream s)
+            {
+                byte[] bytes = new byte[4096];
+                int i = 0;
+                // signature
+                bytes[i++] = (byte)(ZipDirEntry.ZipDirEntrySignature & 0x000000FF);
+                bytes[i++] = (byte)((ZipDirEntry.ZipDirEntrySignature & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((ZipDirEntry.ZipDirEntrySignature & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((ZipDirEntry.ZipDirEntrySignature & 0xFF000000) >> 24);
+
+                // Version Made By
+                bytes[i++] = Header[4];
+                bytes[i++] = Header[5];
+
+                // Version Needed, Bitfield, compression method, lastmod,
+                // crc, sizes, filename length and extra field length -
+                // are all the same as the local file header. So just copy them
+                int j = 0;
+                for (j = 0; j < 26; j++)
+                    bytes[i + j] = Header[4 + j];
+
+                i += j;  // positioned at next available byte
+
+                // File Comment Length
+                bytes[i++] = 0;
+                bytes[i++] = 0;
+
+                // Disk number start
+                bytes[i++] = 0;
+                bytes[i++] = 0;
+
+                // internal file attrs
+                // TODO: figure out what is required here. 
+                bytes[i++] = 1;
+                bytes[i++] = 0;
+
+                // external file attrs
+                // TODO: figure out what is required here. 
+                bytes[i++] = 0x20;
+                bytes[i++] = 0;
+                bytes[i++] = 0xb6;
+                bytes[i++] = 0x81;
+
+                // relative offset of local header (I think this can be zero)
+                bytes[i++] = (byte)(_RelativeOffsetOfHeader & 0x000000FF);
+                bytes[i++] = (byte)((_RelativeOffsetOfHeader & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((_RelativeOffsetOfHeader & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((_RelativeOffsetOfHeader & 0xFF000000) >> 24);
+
+                if (_Debug) System.Console.WriteLine("\ninserting filename into CDS: (length= {0})", Header.Length - 30);
+                // actual filename (starts at offset 34 in header) 
+                for (j = 0; j < Header.Length - 30; j++)
+                {
+                    bytes[i + j] = Header[30 + j];
+                    if (_Debug) System.Console.Write(" {0:X2}", bytes[i + j]);
+                }
+                if (_Debug) System.Console.WriteLine();
+                i += j;
+
+                s.Write(bytes, 0, i);
+            }
+
+
+            private void WriteHeader(System.IO.Stream s, byte[] bytes)
+            {
+                // write the header info
+
+                int i = 0;
+                // signature
+                bytes[i++] = (byte)(ZipEntrySignature & 0x000000FF);
+                bytes[i++] = (byte)((ZipEntrySignature & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((ZipEntrySignature & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((ZipEntrySignature & 0xFF000000) >> 24);
+
+                // version needed
+                Int16 FixedVersionNeeded = 0x14; // from examining existing zip files
+                bytes[i++] = (byte)(FixedVersionNeeded & 0x00FF);
+                bytes[i++] = (byte)((FixedVersionNeeded & 0xFF00) >> 8);
+
+                // bitfield
+                Int16 BitField = 0x00; // from examining existing zip files
+                bytes[i++] = (byte)(BitField & 0x00FF);
+                bytes[i++] = (byte)((BitField & 0xFF00) >> 8);
+
+                // compression method
+                Int16 CompressionMethod = 0x08; // 0x08 = Deflate
+                bytes[i++] = (byte)(CompressionMethod & 0x00FF);
+                bytes[i++] = (byte)((CompressionMethod & 0xFF00) >> 8);
+
+                // LastMod
+                bytes[i++] = (byte)(_LastModDateTime & 0x000000FF);
+                bytes[i++] = (byte)((_LastModDateTime & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((_LastModDateTime & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((_LastModDateTime & 0xFF000000) >> 24);
+
+                // CRC32 (Int32)
+                CRC32 crc32 = new CRC32();
+                UInt32 crc = 0;
+                using (System.IO.Stream input = System.IO.File.OpenRead(FileName))
+                {
+                    crc = crc32.GetCrc32AndCopy(input, CompressedStream);
+                }
+                CompressedStream.Close();  // to get the footer bytes written to the underlying stream
+
+                bytes[i++] = (byte)(crc & 0x000000FF);
+                bytes[i++] = (byte)((crc & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((crc & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((crc & 0xFF000000) >> 24);
+
+                // CompressedSize (Int32)
+                Int32 isz = (Int32)_UnderlyingMemoryStream.Length;
+                UInt32 sz = (UInt32)isz;
+                bytes[i++] = (byte)(sz & 0x000000FF);
+                bytes[i++] = (byte)((sz & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((sz & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((sz & 0xFF000000) >> 24);
+
+                // UncompressedSize (Int32)
+                if (_Debug) System.Console.WriteLine("Uncompressed Size: {0}", crc32.TotalBytesRead);
+                bytes[i++] = (byte)(crc32.TotalBytesRead & 0x000000FF);
+                bytes[i++] = (byte)((crc32.TotalBytesRead & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((crc32.TotalBytesRead & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((crc32.TotalBytesRead & 0xFF000000) >> 24);
+
+                // filename length (Int16)
+                Int16 length = (Int16)FileNameInArchive.Length;
+                
+                bytes[i++] = (byte)(length & 0x00FF);
+                bytes[i++] = (byte)((length & 0xFF00) >> 8);
+
+                // extra field length (short)
+                Int16 ExtraFieldLength = 0x00;
+                bytes[i++] = (byte)(ExtraFieldLength & 0x00FF);
+                bytes[i++] = (byte)((ExtraFieldLength & 0xFF00) >> 8);
+
+                // Tue, 27 Mar 2007  16:35
+
+                // actual filename
+                char[] c = FileNameInArchive.ToCharArray();
+                int j = 0;
+
+                if (_Debug)
+                {
+                    System.Console.WriteLine("local header: writing filename, {0} chars", c.Length);
+                    System.Console.WriteLine("starting offset={0}", i);
+                }
+                for (j = 0; (j < c.Length) && (i + j < bytes.Length); j++)
+                {
+                    bytes[i + j] = System.BitConverter.GetBytes(c[j])[0];
+                    if (_Debug) System.Console.Write(" {0:X2}", bytes[i + j]);
+                }
+                if (_Debug) System.Console.WriteLine();
+
+                i += j;
+
+                // extra field (we always write nothing in this implementation)
+                // ;;
+
+                // remember the file offset of this header
+                _RelativeOffsetOfHeader = (int)s.Length;
+
+
+                if (_Debug)
+                {
+                    System.Console.WriteLine("\nAll header data:");
+                    for (j = 0; j < i; j++)
+                        System.Console.Write(" {0:X2}", bytes[j]);
+                    System.Console.WriteLine();
+                }
+                // finally, write the header to the stream
+                s.Write(bytes, 0, i);
+
+                // preserve this header data for use with the central directory structure.
+                _header = new byte[i];
+                if (_Debug) System.Console.WriteLine("preserving header of {0} bytes", _header.Length);
+                for (j = 0; j < i; j++)
+                    _header[j] = bytes[j];
+
+            }
+
+
+            internal void Write(System.IO.Stream s)
+            {
+                byte[] bytes = new byte[4096];
+                int n;
+
+                // write the header:
+                WriteHeader(s, bytes);
+
+                // write the actual file data: 
+                _UnderlyingMemoryStream.Position = 0;
+
+                if (_Debug)
+                {
+                    Console.WriteLine("{0}: writing compressed data to zipfile...", FileName);
+                    Console.WriteLine("{0}: total data length: {1}", FileName, _UnderlyingMemoryStream.Length);
+                }
+                while ((n = _UnderlyingMemoryStream.Read(bytes, 0, bytes.Length)) != 0)
+                {
+
+                    if (_Debug)
+                    {
+                        Console.WriteLine("{0}: transferring {1} bytes...", FileName, n);
+
+                        for (int j = 0; j < n; j += 2)
+                        {
+                            if ((j > 0) && (j % 40 == 0))
+                                System.Console.WriteLine();
+                            System.Console.Write(" {0:X2}", bytes[j]);
+                            if (j + 1 < n)
+                                System.Console.Write("{0:X2}", bytes[j + 1]);
+                        }
+                        System.Console.WriteLine("\n");
+                    }
+
+                    s.Write(bytes, 0, n);
+                }
+
+                //_CompressedStream.Close();
+                //_CompressedStream= null;
+                _UnderlyingMemoryStream.Close();
+                _UnderlyingMemoryStream = null;
+            }
+        }
+
+        public class ZipFile : IDisposable
+        {
+            private string _name;
+            public string Name
+            {
+                get { return _name; }
+            }
+
+
+
+            // when this is set, we trim the volume (eg C:) off any fully-qualified pathname, 
+            // before writing the ZipEntry into the ZipFile. 
+            // We default this to true.  This allows Windows Explorer to read the zip archives properly. 
+            private bool _TrimVolumeFromFullyQualifiedPaths = true;
+            public bool TrimVolumeFromFullyQualifiedPaths
+            {
+                get { return _TrimVolumeFromFullyQualifiedPaths; }
+                set { _TrimVolumeFromFullyQualifiedPaths = value; }
+            }
+
+            private System.IO.Stream ReadStream
+            {
+                get
+                {
+                    if (_readstream == null)
+                    {
+                        _readstream = System.IO.File.OpenRead(_name);
+                    }
+                    return _readstream;
+                }
+            }
+
+            private System.IO.FileStream WriteStream
+            {
+                get
+                {
+                    if (_writestream == null)
+                    {
+                        _writestream = new System.IO.FileStream(_name, System.IO.FileMode.CreateNew);
+                    }
+                    return _writestream;
+                }
+            }
+
+            private ZipFile() { }
+
+			ZipFolder that;
+
+            #region For Writing Zip Files
+
+            public ZipFile(string NewZipFileName, ZipFolder that)
+            {
+                // create a new zipfile
+                _name = NewZipFileName;
+                if (System.IO.File.Exists(_name))
+                    throw new System.Exception(String.Format("That file ({0}) already exists.", NewZipFileName));
+                _entries = new System.Collections.Generic.List<ZipEntry>();
+				this.that = that;
+            }
+
+
+            public void AddFile(string FileName, string DirectoryPathInArchive)
+            {
+                AddFile(FileName, DirectoryPathInArchive, false);
+            }
+
+            public void AddFile(string FileName, string DirectoryPathInArchive, bool WantVerbose)
+            {
+                ZipEntry ze = ZipEntry.Create(FileName, DirectoryPathInArchive);
+                ze.TrimVolumeFromFullyQualifiedPaths = TrimVolumeFromFullyQualifiedPaths;
+                if (WantVerbose) Console.WriteLine("adding {0}...", FileName);
+                _entries.Add(ze);
+            }
+
+            public void AddDirectory(string DirectoryName, string DirectoryPathInArchive)
+            {
+                AddDirectory(DirectoryName, DirectoryPathInArchive, false);
+            }
+
+            public void AddDirectory(string DirectoryName, string DirectoryPathInArchive, bool WantVerbose)
+            {
+                String[] filenames = System.IO.Directory.GetFiles(DirectoryName);
+                foreach (String filename in filenames)
+                {
+                    if (WantVerbose) Console.WriteLine("adding {0}...", filename);
+					that.Log.LogMessage(filename);
+					that.Log.LogMessage(DirectoryPathInArchive);
+                    AddFile(filename, DirectoryPathInArchive);
+                }
+                String[] dirnames = System.IO.Directory.GetDirectories(DirectoryName);
+                foreach (String dir in dirnames)
+                {
+                    string NewPath = DirectoryPathInArchive + dir.Remove(0, DirectoryName.Length + 1) + "\\";
+                    AddDirectory(dir, NewPath, WantVerbose);
+					that.Log.LogMessage(dir);
+					that.Log.LogMessage(NewPath);
+                }
+            }
+
+
+            public void Save()
+            {
+                // an entry for each file
+                foreach (ZipEntry e in _entries)
+                {
+                    e.Write(WriteStream);
+                }
+
+                WriteCentralDirectoryStructure();
+                WriteStream.Close();
+                _writestream = null;
+            }
+
+
+            private void WriteCentralDirectoryStructure()
+            {
+                // the central directory structure
+                long Start = WriteStream.Length;
+                foreach (ZipEntry e in _entries)
+                {
+                    e.WriteCentralDirectoryEntry(WriteStream);
+                }
+                long Finish = WriteStream.Length;
+
+                // now, the footer
+                WriteCentralDirectoryFooter(Start, Finish);
+            }
+
+
+            private void WriteCentralDirectoryFooter(long StartOfCentralDirectory, long EndOfCentralDirectory)
+            {
+                byte[] bytes = new byte[1024];
+                int i = 0;
+                // signature
+                UInt32 EndOfCentralDirectorySignature = 0x06054b50;
+                bytes[i++] = (byte)(EndOfCentralDirectorySignature & 0x000000FF);
+                bytes[i++] = (byte)((EndOfCentralDirectorySignature & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((EndOfCentralDirectorySignature & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((EndOfCentralDirectorySignature & 0xFF000000) >> 24);
+
+                // number of this disk
+                bytes[i++] = 0;
+                bytes[i++] = 0;
+
+                // number of the disk with the start of the central directory
+                bytes[i++] = 0;
+                bytes[i++] = 0;
+
+                // total number of entries in the central dir on this disk
+                bytes[i++] = (byte)(_entries.Count & 0x00FF);
+                bytes[i++] = (byte)((_entries.Count & 0xFF00) >> 8);
+
+                // total number of entries in the central directory
+                bytes[i++] = (byte)(_entries.Count & 0x00FF);
+                bytes[i++] = (byte)((_entries.Count & 0xFF00) >> 8);
+
+                // size of the central directory
+                Int32 SizeOfCentralDirectory = (Int32)(EndOfCentralDirectory - StartOfCentralDirectory);
+                bytes[i++] = (byte)(SizeOfCentralDirectory & 0x000000FF);
+                bytes[i++] = (byte)((SizeOfCentralDirectory & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((SizeOfCentralDirectory & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((SizeOfCentralDirectory & 0xFF000000) >> 24);
+
+                // offset of the start of the central directory 
+                Int32 StartOffset = (Int32)StartOfCentralDirectory;  // cast down from Long
+                bytes[i++] = (byte)(StartOffset & 0x000000FF);
+                bytes[i++] = (byte)((StartOffset & 0x0000FF00) >> 8);
+                bytes[i++] = (byte)((StartOffset & 0x00FF0000) >> 16);
+                bytes[i++] = (byte)((StartOffset & 0xFF000000) >> 24);
+
+                // zip comment length
+                bytes[i++] = 0;
+                bytes[i++] = 0;
+
+                WriteStream.Write(bytes, 0, i);
+            }
+
+            #endregion
+
+
+            // the destructor
+            ~ZipFile()
+            {
+                // call Dispose with false.  Since we're in the
+                // destructor call, the managed resources will be
+                // disposed of anyways.
+                Dispose(false);
+            }
+
+            public void Dispose()
+            {
+                // dispose of the managed and unmanaged resources
+                Dispose(true);
+
+                // tell the GC that the Finalize process no longer needs
+                // to be run for this object.
+                GC.SuppressFinalize(this);
+            }
+
+
+            protected virtual void Dispose(bool disposeManagedResources)
+            {
+                if (!this._disposed)
+                {
+                    if (disposeManagedResources)
+                    {
+                        // dispose managed resources
+                        if (_readstream != null)
+                        {
+                            _readstream.Dispose();
+                            _readstream = null;
+                        }
+                        if (_writestream != null)
+                        {
+                            _writestream.Dispose();
+                            _writestream = null;
+                        }
+                    }
+                    this._disposed = true;
+                }
+            }
+
+
+            private System.IO.Stream _readstream;
+            private System.IO.FileStream _writestream;
+            private bool _Debug = false;
+            private bool _disposed = false;
+            private System.Collections.Generic.List<ZipEntry> _entries = null;
+            private System.Collections.Generic.List<ZipDirEntry> _direntries = null;
+        }
+
+        class Shared
+        {
+            protected internal static Int32 DateTimeToPacked(DateTime time)
+	        {
+	            UInt16 packedDate = (UInt16)((time.Day & 0x0000001F) | ((time.Month << 5) & 0x000001E0) | (((time.Year - 1980) << 9) & 0x0000FE00));
+	            UInt16 packedTime = (UInt16)((time.Second & 0x0000001F) | ((time.Minute << 5) & 0x000007E0) | ((time.Hour << 11) & 0x0000F800));
+	            return (Int32)(((UInt32)(packedDate << 16)) | packedTime);
+	        }
+        }
+        public class CRC32
+        {
+            private UInt32[] crc32Table;
+            public Int32 TotalBytesRead;
+            public UInt32 GetCrc32(System.IO.Stream input)
+            {
+                return GetCrc32AndCopy(input, null);
+            }
+            public UInt32 GetCrc32AndCopy(System.IO.Stream input, System.IO.Stream output)
+            {
+                unchecked
+                {
+                    UInt32 crc32Result;
+                    crc32Result = 0xFFFFFFFF;
+                    byte[] buffer = new byte[4096];
+                    int readSize = 4096;
+
+                    TotalBytesRead = 0;
+                    int count = input.Read(buffer, 0, readSize);
+                    if (output != null) output.Write(buffer, 0, count);
+                    TotalBytesRead += count;
+                    while (count > 0)
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            crc32Result = ((crc32Result) >> 8) ^ crc32Table[(buffer[i]) ^ ((crc32Result) & 0x000000FF)];
+                        }
+                        count = input.Read(buffer, 0, readSize);
+                        if (output != null) output.Write(buffer, 0, count);
+                        TotalBytesRead += count;
+                    }
+                    return ~crc32Result;
+                }
+
+            }
+            public CRC32()
+            {
+                unchecked
+                {
+                    // This is the official polynomial used by CRC32 in PKZip.
+                    // Often the polynomial is shown reversed as 0x04C11DB7.
+                    UInt32 dwPolynomial = 0xEDB88320;
+                    UInt32 i, j;
+
+                    crc32Table = new UInt32[256];
+
+                    UInt32 dwCrc;
+                    for (i = 0; i < 256; i++)
+                    {
+                        dwCrc = i;
+                        for (j = 8; j > 0; j--)
+                        {
+                            if ((dwCrc & 1) == 1)
+                            {
+                                dwCrc = (dwCrc >> 1) ^ dwPolynomial;
+                            }
+                            else
+                            {
+                                dwCrc >>= 1;
+                            }
+                        }
+                        crc32Table[i] = dwCrc;
+                    }
+                }
+            }
+        }
+    }]]>
+	</Code>
+    </Task>
+  </UsingTask>
+</Project>

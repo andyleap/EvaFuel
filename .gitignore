@@ -1,0 +1,5 @@
+bin
+obj
+package
+*.suo
+*.zip
